@@ -65,6 +65,13 @@ public:
         return 0.;
     }
 
+	 std::vector<double>& ProtonCoeff() { return fProtonCoeff; }
+    std::vector<double>& DeuteronCoeff() { return fDeuteronCoeff; }
+    std::vector<double>& CarbonCoeff() { return fCarbonCoeff; }
+    std::vector<double>& BeCoeff() { return fBeCoeff; }
+    std::vector<double>& BCoeff() { return fBCoeff; }
+    std::vector<double>& AlphaCoeff() { return fAlphaCoeff; }
+
 private:
     std::string fNtupleName;
 
@@ -85,6 +92,13 @@ private:
     std::map<int,std::vector<std::vector<double> > > fThreshold;
     std::map<int,std::vector<std::vector<double> > > fThresholdWidth;
     std::map<int,std::vector<std::vector<double> > > fTimeWindow;
+
+	 std::vector<double> fProtonCoeff;
+    std::vector<double> fDeuteronCoeff;
+    std::vector<double> fCarbonCoeff;
+    std::vector<double> fBeCoeff;
+    std::vector<double> fBCoeff;
+    std::vector<double> fAlphaCoeff;
 };
 
 #endif

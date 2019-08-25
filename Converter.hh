@@ -9,7 +9,7 @@
 #include "TRandom3.h"
 #include "TVector3.h"
 
-#include "TGRSIRunInfo.h"
+#include "TRunInfo.h"
 #include "TChannel.h"
 #include "TFragment.h"
 #include "TGriffin.h"
@@ -23,13 +23,13 @@
 
 class Converter {
 public:
-	Converter(std::vector<std::string>& inputFileNames, const int& runNumber, const int& subRunNumber, const TGRSIRunInfo* runInfo, Settings* settings, bool writeFragmentTree);
+	Converter(std::vector<std::string>& inputFileNames, const int& runNumber, const int& subRunNumber, const TRunInfo* runInfo, Settings* settings, bool writeFragmentTree);
 	~Converter();
 
 	bool Run();
 
 private:
-	int  Cfd(TMnemonic::EDigitizer);
+	int  Cfd(EDigitizer);
 	bool AboveThreshold(double, int);
 	bool InsideTimeWindow();
 	bool DescantNeutronDiscrimination();
@@ -49,7 +49,7 @@ private:
 	int fFragmentTreeEntries;
 	int fRunNumber;
 	int fSubRunNumber;
-	const TGRSIRunInfo* fRunInfo;
+	const TRunInfo* fRunInfo;
 	int fKValue;
 	TRandom3 fRandom;
 
@@ -68,6 +68,15 @@ private:
 	Double_t fPosy;
 	Double_t fPosz;
 	Double_t fTime;
+
+	bool fUseLightYield;
+	std::vector<Double_t>* fEkinVector;
+	std::vector<Double_t>* fEdepVector;
+	std::vector<Int_t>* fParticleTypeVector;
+
+	double LightOutput(double E, std::vector<double> & coeff) {
+		return ( coeff[0]*E-coeff[1]*(1.-TMath::Exp(-1.0*coeff[2]*TMath::Power(E,coeff[3]))) );
+	}
 
 	//branches of output tree
 	// GRIFFIN

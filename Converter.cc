@@ -6,10 +6,11 @@
 #include "TMath.h"
 
 #include "TChannel.h"
+#include "TGRSIMnemonic.h"
 
 #include "Utilities.hh"
 
-Converter::Converter(std::vector<std::string>& inputFileNames, const int& runNumber, const int& subRunNumber, const TGRSIRunInfo* runInfo, Settings* settings, bool writeFragmentTree)
+Converter::Converter(std::vector<std::string>& inputFileNames, const int& runNumber, const int& subRunNumber, const TRunInfo* runInfo, Settings* settings, bool writeFragmentTree)
 	: fSettings(settings), fWriteFragmentTree(writeFragmentTree), fFragmentTreeEntries(0), fRunNumber(runNumber), fSubRunNumber(subRunNumber), fRunInfo(runInfo), fKValue(settings->KValue())
 {
 	//create TChain to read in all input files
@@ -21,6 +22,7 @@ Converter::Converter(std::vector<std::string>& inputFileNames, const int& runNum
 		//add sub-directory and tree name to file name
 		fileName->append(fSettings->NtupleName());
 		fChain.Add(fileName->c_str(), -1);
+		fRandom.SetSeed(1);
 	}
 
 	std::cout<<"will read from "<<fChain.GetListOfFiles()->GetEntries()<<" files"<<std::endl;
@@ -44,6 +46,26 @@ Converter::Converter(std::vector<std::string>& inputFileNames, const int& runNum
 	fChain.SetBranchAddress("posy", &fPosy);
 	fChain.SetBranchAddress("posz", &fPosz);
 	fChain.SetBranchAddress("time", &fTime);
+	if(fChain.SetBranchAddress("particleTypeVector",&fParticleTypeVector) >= 0) {
+		fUseLightYield = true;
+		//fChain.SetBranchAddress("eDepD", &fEDepD);
+		//fChain.SetBranchAddress("eDepC", &fEDepC);
+		//fChain.SetBranchAddress("eDepP", &fEDepP);
+		//fChain.SetBranchAddress("eDepA", &fEDepA);
+		//fChain.SetBranchAddress("eDepE", &fEDepE);
+		//fChain.SetBranchAddress("eDepN", &fEDepN);
+		//fChain.SetBranchAddress("eDepOther", &fEDepOther);
+		//fChain.SetBranchAddress("eDepBe", &fEDepBe);
+		//fChain.SetBranchAddress("eDepB", &fEDepB);
+		//fChain.SetBranchAddress("eKinVector",fEkinVector,&fEkinBranch);
+		//fChain.SetBranchAddress("eDepVector",fEdepVector,&fEdepBranch);
+		//fChain.SetBranchAddress("particleTypeVector",fParticleTypeVector,&fParticleTypeBranch);
+		fChain.SetBranchAddress("eKinVector",&fEkinVector);
+		fChain.SetBranchAddress("eDepVector",&fEdepVector);
+	} else {
+		fUseLightYield = false;
+	}
+
 
 	//create output file
 	fAnalysisFile = new TFile(Form("analysis%05d_%03d.root", fRunNumber, fSubRunNumber), "recreate");
@@ -103,7 +125,7 @@ Converter::~Converter() {
 	if(fAnalysisFile->IsOpen()) {
 		fAnalysisFile->cd();
 		fEventTree.Write("AnalysisTree");
-		fRunInfo->Write("TGRSIRunInfo");
+		fRunInfo->Write("RunInfo");
 		TChannel::WriteToRoot();
 		fAnalysisFile->Close();
 	}
@@ -111,21 +133,21 @@ Converter::~Converter() {
 		if(fFragmentFile->IsOpen()) {
 			fFragmentFile->cd();
 			fFragmentTree.Write("FragmentTree");
-			fRunInfo->Write("TGRSIRunInfo");
+			fRunInfo->Write("RunInfo");
 			TChannel::WriteToRoot();
 			fFragmentFile->Close();
 		}
 	}
 }
 
-int Converter::Cfd(TMnemonic::EDigitizer digitizer)
+int Converter::Cfd(EDigitizer digitizer)
 {
    switch(digitizer) {
-		case TMnemonic::EDigitizer::kGRF16:
+		case EDigitizer::kGRF16:
 			// cfd is in 10/16th of a nanosecond, and replaces the lowest 18 bit of timestamp
 			// so multiply the time by 16e8, and use only the lowest 22 bit
 			return static_cast<int>(fTime*16e8)&0x3fffff;
-		case TMnemonic::EDigitizer::kGRF4G:
+		case EDigitizer::kGRF4G:
 			{
 			// calculate cfd (0 - 8 ns) in 1/256 ns
 			int cfd = fTime*256e9;
@@ -140,7 +162,7 @@ int Converter::Cfd(TMnemonic::EDigitizer digitizer)
 			else              rem = 2;
 			return (rem << 22) | cfd;
 			}
-		case TMnemonic::EDigitizer::kTIG10:
+		case EDigitizer::kTIG10:
 			// cfd is in 10/16th of a nanosecond, and replaces the lowest 23 bit of timestamp
 			return static_cast<int>(fTime*16e8)&0x7ffffff;
 		default:
@@ -174,10 +196,6 @@ bool Converter::Run() {
 
 		//if this entry is from the next event, we fill the tree with everything we've collected so far and reset the vector(s)
 		if((fEventNumber != eventNumber) && ((fSettings->SortNumberOfEvents()==0)||(fSettings->SortNumberOfEvents()>=eventNumber))) {
-			//for(int j = 0; j < 16; j++) {
-			//	GriffinNeighbours_counted[j] = 0;
-			//}
-
 			// this takes the fragments we have collected and adds them to the detector classes
 			// it also automatically fills the fragment tree
 			FillDetectors();
@@ -204,11 +222,61 @@ bool Converter::Run() {
 		if(fSystemID >= 2000) {
 			fCryNumber = 0;
 		}
+		// for DESCANT we use the light yield as deposited energy if we have the information in the tree (fUseLightYield flag)
+		if(fUseLightYield && 8010 <= fSystemID && fSystemID <= 8050) {
+			// we're reusing fDepEnergy, so we reset it here
+			fDepEnergy = 0.;
+			// light yield functions
+        double centroidEkin = 0.;        
+        double centroidEres = 0.;        
+
+         long unsigned int nScatters = fEdepVector->size();
+        //std::cout << "looping through " << nScatters << " scatters" << std::endl;
+        for(long unsigned int j = 0; j < nScatters; ++j) {
+            //std::cout << "scatter " << j << " || pType = " << fParticleTypeVector->at(j) << " || eDep = " << fEdepVector->at(j) << std::endl;
+				// we could simplify this by having a Settings::LightCoeff(int) function that does the proper indexing for us?
+            if(fParticleTypeVector->at(j) == 2 || fParticleTypeVector->at(j) == 3) { 
+                centroidEkin = fEkinVector->at(j);  
+                centroidEres = fEkinVector->at(j)-fEdepVector->at(j);
+            } else if(fParticleTypeVector->at(j) == 4) { 
+                centroidEkin = LightOutput(fEkinVector->at(j),fSettings->ProtonCoeff()); 
+                centroidEres = LightOutput(fEkinVector->at(j)-fEdepVector->at(j),fSettings->ProtonCoeff()); 
+            } else if(fParticleTypeVector->at(j) == 6) { 
+                centroidEkin = LightOutput(fEkinVector->at(j),fSettings->DeuteronCoeff()); 
+                centroidEres = LightOutput(fEkinVector->at(j)-fEdepVector->at(j),fSettings->DeuteronCoeff()); 
+            } else if(fParticleTypeVector->at(j) == 7) { 
+                centroidEkin = LightOutput(fEkinVector->at(j),fSettings->CarbonCoeff()); 
+                centroidEres = LightOutput(fEkinVector->at(j)-fEdepVector->at(j),fSettings->CarbonCoeff()); 
+            } else if(fParticleTypeVector->at(j) == 8) { 
+                centroidEkin = LightOutput(fEkinVector->at(j),fSettings->AlphaCoeff()); 
+                centroidEres = LightOutput(fEkinVector->at(j)-fEdepVector->at(j),fSettings->AlphaCoeff()); 
+            } else if(fParticleTypeVector->at(j) == 9) { 
+                centroidEkin = LightOutput(fEkinVector->at(j),fSettings->BeCoeff()); 
+                centroidEres = LightOutput(fEkinVector->at(j)-fEdepVector->at(j),fSettings->BeCoeff()); 
+            } else if(fParticleTypeVector->at(j) == 10) { 
+                centroidEkin = LightOutput(fEkinVector->at(j),fSettings->BCoeff()); 
+                centroidEres = LightOutput(fEkinVector->at(j)-fEdepVector->at(j),fSettings->BCoeff()); 
+            } else {
+                centroidEkin = 0.;
+                centroidEres = 0.;
+            }   
+
+				// in the original code Joey added/subtracted the smeared energies, we use the unsmeared energies and then smear them at the end
+				// have to check if this makes a big difference?
+				if(centroidEkin>0) { 
+					 fDepEnergy += 1000.*centroidEkin;
+            }
+            if(centroidEres>0) { 
+					 fDepEnergy -= 1000.*centroidEres;
+            }
+        }
+        if(fDepEnergy>0.) fDepEnergy+=8.5;
+		}
 		//create energy-resolution smeared energy
 		if(fSettings->DontSmearEnergy()) {
 			smearedEnergy = fDepEnergy;
 		} else {
-			smearedEnergy = fRandom.Gaus(fDepEnergy,fSettings->Resolution(fSystemID,fDetNumber,fCryNumber,fDepEnergy));
+			smearedEnergy = fRandom.Gaus(fDepEnergy, fSettings->Resolution(fSystemID,fDetNumber,fCryNumber,fDepEnergy));
 		}
 
 		if((fSettings->SortNumberOfEvents()==0)||(fSettings->SortNumberOfEvents()>=fEventNumber) ) {
@@ -267,9 +335,9 @@ bool Converter::Run() {
 						fFragments[address].SetCfd(0);
 						fFragments[address].SetCharge(smearedEnergy*fKValue);
 						fFragments[address].SetKValue(fKValue);
-						fFragments[address].SetMidasId(fFragmentTreeEntries);
+						//fFragments[address].SetMidasId(fFragmentTreeEntries);
 						// fTime is the time from the beginning of the event in seconds
-						fFragments[address].SetMidasTimeStamp(fTime); 
+						fFragments[address].SetDaqTimeStamp(fTime); 
 						fFragments[address].SetTimeStamp(fTime*1e8);
 						//fFragments[address].SetZc();
 						++fFragmentTreeEntries;
@@ -279,7 +347,7 @@ bool Converter::Run() {
 							switch(fSystemID) {
 								case 1000://griffin
 									mnemonic = Form("GRG%02d%cN00A", fDetNumber, crystalColor[fCryNumber]);
-									fFragments[address].SetCfd(Cfd(TMnemonic::EDigitizer::kGRF16));
+									fFragments[address].SetCfd(Cfd(EDigitizer::kGRF16));
 									break;
 								case 1010://left extension suppressor
 								case 1020://right extension suppressor
@@ -287,26 +355,26 @@ bool Converter::Run() {
 								case 1040://right casing suppressor
 								case 1050://back suppressor
 									mnemonic = Form("GRS%02d%cN00A", fDetNumber, crystalColor[fCryNumber]);
-									fFragments[address].SetCfd(Cfd(TMnemonic::EDigitizer::kGRF16));
+									fFragments[address].SetCfd(Cfd(EDigitizer::kGRF16));
 									break;
 								case 2000://LABr
 									mnemonic = Form("DAL%02dXN00X", fDetNumber);
-									fFragments[address].SetCfd(Cfd(TMnemonic::EDigitizer::kGRF16));
+									fFragments[address].SetCfd(Cfd(EDigitizer::kGRF16));
 									break;
 								case 3000://ancilliary BGO
 									mnemonic = Form("DAS%02dXN00X", fDetNumber);
-									fFragments[address].SetCfd(Cfd(TMnemonic::EDigitizer::kGRF16));
+									fFragments[address].SetCfd(Cfd(EDigitizer::kGRF16));
 									break;
 								case 5000://SCEPTAR
 									mnemonic = Form("SEP%02dXN00X", fDetNumber);
-									fFragments[address].SetCfd(Cfd(TMnemonic::EDigitizer::kGRF16));
+									fFragments[address].SetCfd(Cfd(EDigitizer::kGRF16));
 									break;
 								case 10://SPICE
 									mnemonic = Form("SPI%02dXN%0dX", fDetNumber, fCryNumber);//TODO: fix SPICE mnemonic
 									break;
 								case 50://PACES
 									mnemonic = Form("PAC%02dXN00A", fDetNumber);
-									fFragments[address].SetCfd(Cfd(TMnemonic::EDigitizer::kGRF16));
+									fFragments[address].SetCfd(Cfd(EDigitizer::kGRF16));
 									break;
 								case 8010://blue
 								case 8020://green
@@ -314,7 +382,7 @@ bool Converter::Run() {
 								case 8040://white
 								case 8050://yellow
 									mnemonic = Form("DSC%02dXN00X", fDetNumber);
-									fFragments[address].SetCfd(Cfd(TMnemonic::EDigitizer::kGRF4G));
+									fFragments[address].SetCfd(Cfd(EDigitizer::kGRF4G));
 									break;
 								default: 
 									std::cerr<<"Sorry, unknown system ID "<<fSystemID<<std::endl;
@@ -425,12 +493,10 @@ bool Converter::AboveThreshold(double energy, int systemID) {
 		// 0.9 * 1.11111111 = 100%, 0.8*1.1111111 = 0.888888888
 		if(energy > 50.0 && (fRandom.Uniform(0.,1.) < 0.88888888 )) {
 			return true;
-		}
-		else {
+		} else {
 			return false;
 		}
-	}
-	else if(energy > fSettings->Threshold(fSystemID,fDetNumber,fCryNumber)+10*fSettings->ThresholdWidth(fSystemID,fDetNumber,fCryNumber)) {
+	} else if(energy > fSettings->Threshold(fSystemID,fDetNumber,fCryNumber)+10*fSettings->ThresholdWidth(fSystemID,fDetNumber,fCryNumber)) {
 		return true;
 	}
 
